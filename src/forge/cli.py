@@ -91,6 +91,12 @@ def _init_parser() -> argparse.ArgumentParser:
     health_sub.add_parser("ready", help="Readiness probe")
     health_sub.add_parser("deep", help="Deep health check")
 
+    # serve
+    serve_parser = subparsers.add_parser("serve", help="Start the Forge API server")
+    serve_parser.add_argument("--host", default="0.0.0.0", help="Bind host")
+    serve_parser.add_argument("--port", type=int, default=8080, help="Bind port")
+    serve_parser.add_argument("--reload", action="store_true", help="Enable auto-reload (dev)")
+
     # voice
     voice_parser = subparsers.add_parser("voice", help="Voice-driven spec creation")
     voice_sub = voice_parser.add_subparsers(dest="voice_command")
@@ -463,6 +469,30 @@ def _spec_to_markdown(spec) -> str:
     return "\n".join(lines)
 
 
+async def _cmd_serve(args: argparse.Namespace) -> int:
+    """Start the Forge API server."""
+    try:
+        from forge.api.server import create_app
+        import uvicorn
+    except ImportError as e:
+        print(f"Error: {e}")
+        print("Install with: pip install fastapi[standard] uvicorn")
+        return 1
+
+    app = create_app()
+    print(f"Starting Forge API server on {args.host}:{args.port}")
+    print(f"  Dashboard: http://{args.host}:{args.port}/static/index.html")
+    print(f"  API docs:  http://{args.host}:{args.port}/docs")
+    print(f"  Health:    http://{args.host}:{args.port}/health")
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+    )
+    return 0
+
+
 async def main_async(argv: list[str] | None = None) -> int:
     parser = _init_parser()
     args = parser.parse_args(argv)
@@ -489,6 +519,7 @@ async def main_async(argv: list[str] | None = None) -> int:
             "discover": _cmd_mcp_discover,
         },
         "health": _cmd_health,
+        "serve": _cmd_serve,
         "voice": {
             "start": _cmd_voice_start,
             "speak": _cmd_voice_speak,

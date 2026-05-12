@@ -174,7 +174,7 @@ class TestTridentEnsemble:
         agent = AgentConfig(name="coder", role="coder", tools=[], permissions=[])
         result = await ensemble.evaluate(agent, "delete_database", {})
 
-        assert result.ensemble_score >= 0.2  # delete_database is high risk
+        assert result.ensemble_score >= 0.5  # delete_database is high risk
 
     @pytest.mark.asyncio
     async def test_prong_scores_present(self, ensemble: TridentEnsemble) -> None:

@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forge Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            min-height: 100vh;
+        }
+        .header {
+            background: #1e293b;
+            padding: 1rem 2rem;
+            border-bottom: 1px solid #334155;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 { font-size: 1.5rem; color: #38bdf8; }
+        .header .version { color: #64748b; font-size: 0.875rem; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 2rem; }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .card {
+            background: #1e293b;
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            border: 1px solid #334155;
+        }
+        .card h3 {
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #94a3b8;
+            margin-bottom: 0.5rem;
+        }
+        .metric {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: #38bdf8;
+        }
+        .metric.success { color: #22c55e; }
+        .metric.warning { color: #f59e0b; }
+        .metric.danger { color: #ef4444; }
+        .status-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .status-badge.running { background: #dbeafe; color: #1e40af; }
+        .status-badge.completed { background: #dcfce7; color: #166534; }
+        .status-badge.failed { background: #fee2e2; color: #991b1b; }
+        .table-container {
+            background: #1e293b;
+            border-radius: 0.75rem;
+            border: 1px solid #334155;
+            overflow: hidden;
+        }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 0.875rem 1.5rem; text-align: left; }
+        th {
+            background: #334155;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #94a3b8;
+        }
+        td { border-top: 1px solid #334155; font-size: 0.875rem; }
+        tr:hover td { background: #334155; }
+        .refresh-btn {
+            background: #38bdf8;
+            color: #0f172a;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .refresh-btn:hover { background: #7dd3fc; }
+        .ws-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+        }
+        .ws-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ef4444;
+        }
+        .ws-dot.connected { background: #22c55e; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>Forge Dashboard</h1>
+            <span class="version">v0.1.0 — Agent-Native SDLC Control Plane</span>
+        </div>
+        <div style="display:flex;gap:1rem;align-items:center;">
+            <span class="ws-status">
+                <span class="ws-dot" id="ws-dot"></span>
+                <span id="ws-text">Disconnected</span>
+            </span>
+            <button class="refresh-btn" onclick="loadData()">Refresh</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="grid">
+            <div class="card">
+                <h3>Total Workflows</h3>
+                <div class="metric" id="total-workflows">0</div>
+            </div>
+            <div class="card">
+                <h3>Running</h3>
+                <div class="metric warning" id="running-workflows">0</div>
+            </div>
+            <div class="card">
+                <h3>Completed</h3>
+                <div class="metric success" id="completed-workflows">0</div>
+            </div>
+            <div class="card">
+                <h3>Failed</h3>
+                <div class="metric danger" id="failed-workflows">0</div>
+            </div>
+        </div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Workflow ID</th>
+                        <th>Spec</th>
+                        <th>Status</th>
+                        <th>Progress</th>
+                        <th>Duration</th>
+                    </tr>
+                </thead>
+                <tbody id="workflows-table">
+                    <tr><td colspan="5" style="text-align:center;color:#64748b;">No workflows</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <h2 style="margin: 2rem 0 1rem; font-size: 1.25rem;">Registered Agents</h2>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Role</th>
+                        <th>Tools</th>
+                        <th>Permissions</th>
+                    </tr>
+                </thead>
+                <tbody id="agents-table">
+                    <tr><td colspan="4" style="text-align:center;color:#64748b;">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <h2 style="margin: 2rem 0 1rem; font-size: 1.25rem;">Specs</h2>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Title</th>
+                        <th>Steps</th>
+                    </tr>
+                </thead>
+                <tbody id="specs-table">
+                    <tr><td colspan="3" style="text-align:center;color:#64748b;">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin + '/api/v1';
+        let ws = null;
+
+        function connectWebSocket() {
+            const wsUrl = window.location.origin.replace(/^http/, 'ws') + '/ws/events';
+            ws = new WebSocket(wsUrl);
+            ws.onopen = () => {
+                document.getElementById('ws-dot').classList.add('connected');
+                document.getElementById('ws-text').textContent = 'Connected';
+            };
+            ws.onclose = () => {
+                document.getElementById('ws-dot').classList.remove('connected');
+                document.getElementById('ws-text').textContent = 'Disconnected';
+                setTimeout(connectWebSocket, 3000);
+            };
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                console.log('WS:', data);
+            };
+        }
+
+        async function loadData() {
+            try {
+                const [metricsRes, agentsRes, specsRes] = await Promise.all([
+                    fetch(`${API_BASE}/metrics`),
+                    fetch(`${API_BASE}/agents`),
+                    fetch(`${API_BASE}/specs`),
+                ]);
+
+                const metrics = await metricsRes.json();
+                const agents = await agentsRes.json();
+                const specs = await specsRes.json();
+
+                document.getElementById('total-workflows').textContent = metrics.workflows_total;
+                document.getElementById('running-workflows').textContent = metrics.workflows_running;
+                document.getElementById('completed-workflows').textContent = metrics.workflows_completed;
+                document.getElementById('failed-workflows').textContent = metrics.workflows_failed;
+
+                const agentsTable = document.getElementById('agents-table');
+                agentsTable.innerHTML = agents.agents.map(a => `
+                    <tr>
+                        <td><strong>${a.name}</strong></td>
+                        <td><span class="status-badge running">${a.role}</span></td>
+                        <td>${a.tools.join(', ') || 'none'}</td>
+                        <td>${a.permissions.join(', ') || 'none'}</td>
+                    </tr>
+                `).join('');
+
+                const specsTable = document.getElementById('specs-table');
+                specsTable.innerHTML = specs.specs.map(s => `
+                    <tr>
+                        <td><code>${s.id}</code></td>
+                        <td>${s.title}</td>
+                        <td>${s.steps}</td>
+                    </tr>
+                `).join('');
+            } catch (err) {
+                console.error('Failed to load data:', err);
+            }
+        }
+
+        connectWebSocket();
+        loadData();
+        setInterval(loadData, 10000);
+    </script>
+</body>
+</html>
