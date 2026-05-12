@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.env
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+tox/
+
+# Documentation build
+docs/_build/
+site/
+
+# Forge runtime
+.forge/graph/
+.forge/logs/
+*.graphml
+
+# Local configs
+agents.local.yaml
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db

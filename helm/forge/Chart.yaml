@@ -1,0 +1,19 @@
+apiVersion: v2
+name: forge
+description: Helm chart for Forge -- Agent-Native SDLC Control Plane
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - agentic-ai
+  - sdlc
+  - mcp
+  - orchestration
+home: https://github.com/ahinsaai/forge
+sources:
+  - https://github.com/ahinsaai/forge
+maintainers:
+  - name: Abhinav Khare
+    email: abhinav@ahinsa.ai
+annotations:
+  category: DeveloperTools

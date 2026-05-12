@@ -1,4 +1,4 @@
-.PHONY: install lint format test clean docs
+.PHONY: install lint format test clean docs docker deploy
 
 install:
 	pip install -e ".[dev]"
@@ -21,3 +21,24 @@ clean:
 
 docs:
 	mkdocs serve
+
+docker:
+	docker build -t ahinsaai/forge:latest -f docker/Dockerfile .
+
+docker-run:
+	docker-compose -f docker/docker-compose.yml up -d
+
+docker-stop:
+	docker-compose -f docker/docker-compose.yml down
+
+helm-install:
+	helm upgrade --install forge ./helm/forge --namespace forge --create-namespace
+
+helm-uninstall:
+	helm uninstall forge --namespace forge
+
+deploy:
+	./scripts/deploy.sh production
+
+setup:
+	./scripts/setup-local.sh
