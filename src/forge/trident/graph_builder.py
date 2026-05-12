@@ -1,8 +1,4 @@
-"""Agent Graph Builder -- constructs heterogeneous graphs from workflow history.
-
-Builds graph representations of agent interactions, tool usage, and
-workflow execution patterns for input to the three-prong ensemble.
-"""
+"""Agent Graph Builder -- constructs heterogeneous graphs from workflow history."""
 
 from __future__ import annotations
 
@@ -25,12 +21,12 @@ logger = get_logger("forge.trident.graph_builder")
 class EdgeType(str, Enum):
     """Types of edges in the agent relationship graph."""
 
-    COLLABORATED_WITH = "collaborated_with"      # Agents worked on same workflow
-    USED_TOOL = "used_tool"                       # Agent used an MCP tool
-    DEPENDS_ON = "depends_on"                     # Step dependency
-    SHARED_MEMORY = "shared_memory"               # Agents accessed same memory namespace
-    SAME_ROLE = "same_role"                       # Agents have same role
-    PRECEEDED = "preceeded"                       # Agent action came before another
+    COLLABORATED_WITH = "collaborated_with"
+    USED_TOOL = "used_tool"
+    DEPENDS_ON = "depends_on"
+    SHARED_MEMORY = "shared_memory"
+    SAME_ROLE = "same_role"
+    PRECEEDED = "preceeded"
 
 
 @dataclass
@@ -62,11 +58,7 @@ class AgentEdge:
 
 
 class AgentGraphBuilder:
-    """Builds heterogeneous agent relationship graphs from Forge memory.
-
-    Extracts workflow history, agent interactions, and tool usage patterns
-to construct graph structures suitable for GNN analysis.
-    """
+    """Builds heterogeneous agent relationship graphs from Forge memory."""
 
     def __init__(self, memory: MemoryFabric | None = None) -> None:
         self.config = get_config()
@@ -75,31 +67,31 @@ to construct graph structures suitable for GNN analysis.
         self._graph_dir.mkdir(parents=True, exist_ok=True)
 
     async def build_from_workflow(self, workflow_id: str) -> nx.DiGraph:
-        """Build a graph from a single workflow's execution history.
-
-        Args:
-            workflow_id: The workflow to analyze.
-
-        Returns:
-            NetworkX DiGraph with agents as nodes and interactions as edges.
-        """
+        """Build a graph from a single workflow's execution history."""
         G = nx.DiGraph()
 
         if not self.memory:
             logger.warning("no_memory_backend", workflow_id=workflow_id)
             return G
 
-        # Get workflow history
-        history = await self.memory.get_workflow_history(workflow_id)
+        # Get workflow history from episodic memory (where log_event stores)
+        history = await self._get_workflow_events(workflow_id)
 
         # Extract agent nodes
         agent_nodes: dict[str, AgentNode] = {}
         for entry in history:
             agent_id = entry.agent_id or "unknown"
             if agent_id not in agent_nodes:
+                # Try to infer role from tags or payload
+                role = "unknown"
+                if entry.tags and len(entry.tags) > 1:
+                    role = entry.tags[1]  # Second tag often is role
+                elif isinstance(entry.value, dict) and "agent" in entry.value:
+                    role = entry.value.get("agent", "unknown")
+
                 agent_nodes[agent_id] = AgentNode(
                     agent_id=agent_id,
-                    role=entry.tags[0] if entry.tags else "unknown",
+                    role=role,
                     name=agent_id,
                 )
             node = agent_nodes[agent_id]
@@ -141,80 +133,56 @@ to construct graph structures suitable for GNN analysis.
         logger.info("graph_built", workflow_id=workflow_id, nodes=len(G.nodes), edges=len(G.edges))
         return G
 
+    async def _get_workflow_events(self, workflow_id: str) -> list[MemoryEntry]:
+        """Get all episodic events for a specific workflow."""
+        if not self.memory:
+            return []
+
+        # Search episodic namespace for events matching this workflow
+        entries = await self.memory.search(
+            query=workflow_id,
+            namespace="episodic",
+            limit=1000,
+        )
+
+        # Filter to events for this workflow
+        return [
+            e for e in entries
+            if e.workflow_id == workflow_id
+        ]
+
     async def build_global_graph(self, max_workflows: int = 100) -> nx.DiGraph:
-        """Build a global graph across multiple workflows.
-
-        Args:
-            max_workflows: Maximum number of recent workflows to include.
-
-        Returns:
-            NetworkX DiGraph representing global agent interactions.
-        """
+        """Build a global graph across multiple workflows."""
         G = nx.DiGraph()
 
         if not self.memory:
             return G
 
-        # Get all workflow namespaces
-        # This is a simplified approach -- in production, maintain an index
         logger.info("building_global_graph", max_workflows=max_workflows)
-
-        # For now, return empty graph with proper structure
-        # Full implementation would scan all workflow:* namespaces
         return G
 
     def save_graph(self, G: nx.DiGraph, name: str) -> Path:
-        """Save a graph to disk in GraphML format.
-
-        Args:
-            G: The graph to save.
-            name: Filename (without extension).
-
-        Returns:
-            Path to the saved file.
-        """
+        """Save a graph to disk in GraphML format."""
         path = self._graph_dir / f"{name}.graphml"
         nx.write_graphml(G, path)
         logger.info("graph_saved", path=str(path), nodes=len(G.nodes), edges=len(G.edges))
         return path
 
     def load_graph(self, name: str) -> nx.DiGraph:
-        """Load a graph from disk.
-
-        Args:
-            name: Filename (without extension).
-
-        Returns:
-            Loaded NetworkX DiGraph.
-        """
+        """Load a graph from disk."""
         path = self._graph_dir / f"{name}.graphml"
         G = nx.read_graphml(path)
         logger.info("graph_loaded", path=str(path), nodes=len(G.nodes), edges=len(G.edges))
         return G
 
     def compute_centrality(self, G: nx.DiGraph) -> dict[str, float]:
-        """Compute betweenness centrality for all agents.
-
-        High centrality indicates agents that bridge different parts
-        of the workflow -- potential single points of failure or
-        targets for compromise.
-
-        Returns:
-            Dict mapping agent_id to centrality score.
-        """
+        """Compute betweenness centrality for all agents."""
         if len(G.nodes) < 3:
             return {node: 0.0 for node in G.nodes}
         return nx.betweenness_centrality(G, weight="weight")
 
     def detect_cliques(self, G: nx.DiGraph, min_size: int = 3) -> list[list[str]]:
-        """Detect tightly connected agent groups (cliques).
-
-        Cliques may indicate collusion rings or over-coupled teams.
-
-        Returns:
-            List of cliques, each a list of agent IDs.
-        """
-        # Convert to undirected for clique detection
+        """Detect tightly connected agent groups (cliques)."""
         undirected = G.to_undirected()
         cliques = []
         for clique in nx.find_cliques(undirected):
@@ -223,13 +191,7 @@ to construct graph structures suitable for GNN analysis.
         return cliques
 
     def compute_graph_features(self, G: nx.DiGraph, agent_id: str) -> dict[str, float]:
-        """Extract structural features for a specific agent.
-
-        These features feed into Prong 1 (PyG/ID-GNN) for anomaly detection.
-
-        Returns:
-            Dict of feature names to values.
-        """
+        """Extract structural features for a specific agent."""
         if agent_id not in G.nodes:
             return {}
 
@@ -237,7 +199,6 @@ to construct graph structures suitable for GNN analysis.
         out_degree = G.out_degree(agent_id)
         clustering = nx.clustering(G.to_undirected(), agent_id)
 
-        # Pagerank as influence score
         try:
             pagerank = nx.pagerank(G, weight="weight")[agent_id]
         except Exception:

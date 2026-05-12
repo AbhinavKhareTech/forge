@@ -1,8 +1,4 @@
-"""Feature extraction for BGI Trident ensemble.
-
-Extracts tabular, temporal, and graph features from agent execution
-history for input to the three-prong ensemble.
-"""
+"""Feature extraction for BGI Trident ensemble."""
 
 from __future__ import annotations
 
@@ -57,32 +53,19 @@ class AgentFeatures:
     # Anomaly indicators
     failure_rate: float = 0.0
     block_rate: float = 0.0
-    risk_score_trend: float = 0.0  # positive = increasing risk
+    risk_score_trend: float = 0.0
     time_since_last_execution_hours: float = 0.0
 
 
 class AgentFeatureExtractor:
-    """Extracts features from agent execution history for Trident scoring.
-
-    Produces tabular features for Prong 3 (XGBoost) and graph
-    features for Prongs 1 and 2 (PyG, DGL).
-    """
+    """Extracts features from agent execution history for Trident scoring."""
 
     def __init__(self, memory: MemoryFabric | None = None) -> None:
         self.config = get_config()
         self.memory = memory
 
     async def extract(self, agent: AgentConfig, action: str, context: dict[str, Any]) -> AgentFeatures:
-        """Extract features for a specific agent and action.
-
-        Args:
-            agent: The agent being evaluated.
-            action: The action the agent wants to perform.
-            context: Execution context.
-
-        Returns:
-            AgentFeatures with computed feature values.
-        """
+        """Extract features for a specific agent and action."""
         features = AgentFeatures(
             agent_id=agent.name,
             role=agent.role,
@@ -100,11 +83,11 @@ class AgentFeatureExtractor:
         features.total_executions = len(history)
         features.total_failures = sum(
             1 for h in history
-            if h.value.get("status") == "failed"
+            if isinstance(h.value, dict) and h.value.get("status") == "failed"
         )
         features.total_blocks = sum(
             1 for h in history
-            if h.value.get("status") == "blocked"
+            if isinstance(h.value, dict) and h.value.get("status") == "blocked"
         )
 
         if features.total_executions > 0:
@@ -114,7 +97,7 @@ class AgentFeatureExtractor:
             exec_times = [
                 h.value.get("execution_time_ms", 0)
                 for h in history
-                if isinstance(h.value.get("execution_time_ms"), (int, float))
+                if isinstance(h.value, dict) and isinstance(h.value.get("execution_time_ms"), (int, float))
             ]
             if exec_times:
                 features.avg_execution_time_ms = sum(exec_times) / len(exec_times)
@@ -122,11 +105,10 @@ class AgentFeatureExtractor:
             risk_scores = [
                 h.value.get("risk_score", 0)
                 for h in history
-                if isinstance(h.value.get("risk_score"), (int, float))
+                if isinstance(h.value, dict) and isinstance(h.value.get("risk_score"), (int, float))
             ]
             if risk_scores:
                 features.avg_risk_score = sum(risk_scores) / len(risk_scores)
-                # Trend: compare recent vs older
                 if len(risk_scores) >= 4:
                     recent = sum(risk_scores[-2:]) / 2
                     older = sum(risk_scores[:-2]) / len(risk_scores[:-2])
@@ -147,7 +129,6 @@ class AgentFeatureExtractor:
             if ts > week_ago:
                 features.executions_last_week += 1
 
-            # Off-hours: 10 PM - 6 AM
             if ts.hour < 6 or ts.hour >= 22:
                 features.off_hours_executions += 1
 
@@ -160,10 +141,11 @@ class AgentFeatureExtractor:
         tools_used: set[str] = set()
         tool_counts: dict[str, int] = {}
         for h in history:
-            tools = h.value.get("tools_used", [])
-            for t in tools:
-                tools_used.add(t)
-                tool_counts[t] = tool_counts.get(t, 0) + 1
+            if isinstance(h.value, dict):
+                tools = h.value.get("tools_used", [])
+                for t in tools:
+                    tools_used.add(t)
+                    tool_counts[t] = tool_counts.get(t, 0) + 1
 
         features.unique_tools_used = len(tools_used)
         if tool_counts:
@@ -173,9 +155,8 @@ class AgentFeatureExtractor:
         # Workflow patterns
         workflow_ids: set[str] = set()
         for h in history:
-            wf_id = h.workflow_id
-            if wf_id:
-                workflow_ids.add(wf_id)
+            if h.workflow_id:
+                workflow_ids.add(h.workflow_id)
         features.unique_workflows = len(workflow_ids)
 
         logger.debug(
@@ -193,30 +174,27 @@ class AgentFeatureExtractor:
         if not self.memory:
             return []
 
-        # Search episodic namespace for this agent's events
-        entries = await self.memory.search(
-            query=agent_name,
-            namespace="episodic",
-            limit=self.config.max_concurrent_agents * 10,
-        )
+        # List all keys in episodic namespace and filter by agent_id
+        try:
+            keys = await self.memory._backend.list_keys(namespace="episodic")
+        except Exception:
+            return []
 
-        # Filter to events for this agent
-        return [
-            e for e in entries
-            if e.agent_id == agent_name or agent_name in str(e.value)
-        ]
+        entries = []
+        for key in keys:
+            entry = await self.memory._backend.read(key, namespace="episodic")
+            if entry and entry.agent_id == agent_name:
+                entries.append(entry)
+
+        return entries
 
     def to_vector(self, features: AgentFeatures) -> list[float]:
-        """Convert features to a flat vector for XGBoost (Prong 3).
-
-        Returns:
-            List of float features in deterministic order.
-        """
+        """Convert features to a flat vector for XGBoost (Prong 3)."""
         return [
             float(features.total_executions),
             float(features.total_failures),
             float(features.total_blocks),
-            features.avg_execution_time_ms / 1000.0,  # normalize to seconds
+            features.avg_execution_time_ms / 1000.0,
             features.avg_risk_score,
             float(features.executions_last_hour),
             float(features.executions_last_day),

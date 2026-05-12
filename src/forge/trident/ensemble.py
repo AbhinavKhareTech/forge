@@ -354,9 +354,9 @@ class TridentEnsemble:
             # model.load_model(str(self.config.prong3_model_path))
             # dmatrix = xgboost.DMatrix([feature_vector])
             # score = float(model.predict(dmatrix)[0])
-            score = self._rule_based_score(features)
+            score = self._rule_based_score(features, action)
         else:
-            score = self._rule_based_score(features)
+            score = self._rule_based_score(features, action)
 
         # Generate signals from feature thresholds
         if features.failure_rate > 0.5:
@@ -442,10 +442,22 @@ class TridentEnsemble:
             score = max(score, 0.25)
         return score
 
-    def _rule_based_score(self, features: AgentFeatures) -> float:
-        """Rule-based scoring from extracted features."""
+    def _rule_based_score(self, features: AgentFeatures, action: str = "") -> float:
+        """Rule-based scoring from extracted features and action type."""
         score = 0.0
 
+        # Action-based risk (independent of history)
+        action_risk = {
+            "delete_database": 0.9,
+            "deploy_prod": 0.8,
+            "delete_file": 0.6,
+            "write_file": 0.3,
+            "read_file": 0.05,
+            "execute_step": 0.1,
+        }
+        score = max(score, action_risk.get(action, 0.2))
+
+        # History-based risk
         if features.failure_rate > 0.5:
             score = max(score, 0.8)
         elif features.failure_rate > 0.3:

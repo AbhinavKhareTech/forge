@@ -1,18 +1,9 @@
-"""Voice Session -- manages voice-driven spec creation sessions.
-
-Handles the full lifecycle of a voice session:
-1. Start session
-2. Collect voice input (multiple utterances)
-3. Transcribe and accumulate context
-4. Generate spec
-5. Confirm with user
-6. Save or discard
-"""
+"""Voice Session -- manages voice-driven spec creation sessions."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from forge.voice.transcriber import Language, TranscriptionResult, VoiceTranscriber
@@ -36,16 +27,19 @@ class VoiceSessionState:
 
 
 class VoiceSession:
-    """Manages a voice-driven spec creation session.
-
-    Supports multi-turn conversations where the user can
-    iteratively refine the spec through voice commands.
-    """
+    """Manages a voice-driven spec creation session."""
 
     _sessions: dict[str, VoiceSessionState] = {}
+    _id_counter: int = 0
 
     def __init__(self, session_id: str | None = None, language: Language = Language.HINGLISH) -> None:
-        self.session_id = session_id or f"voice-{datetime.utcnow().timestamp():.0f}"
+        if session_id:
+            self.session_id = session_id
+        else:
+            # Use counter + timestamp for unique IDs
+            VoiceSession._id_counter += 1
+            self.session_id = f"voice-{datetime.utcnow().timestamp():.0f}-{VoiceSession._id_counter:04d}"
+
         self.language = language
         self.transcriber = VoiceTranscriber(language=language)
         self.spec_generator = VoiceSpecGenerator()
@@ -56,6 +50,9 @@ class VoiceSession:
                 session_id=self.session_id,
                 language=language,
             )
+        else:
+            # Update language if reusing existing session
+            self._sessions[self.session_id].language = language
 
     @property
     def state(self) -> VoiceSessionState:
@@ -63,16 +60,7 @@ class VoiceSession:
         return self._sessions[self.session_id]
 
     async def process_utterance(self, audio_bytes: bytes | None = None, text_input: str | None = None) -> dict[str, Any]:
-        """Process a single voice utterance.
-
-        Args:
-            audio_bytes: Raw audio data.
-            text_input: Text fallback for testing.
-
-        Returns:
-            Dict with transcription, entities, and current spec preview.
-        """
-        # Transcribe
+        """Process a single voice utterance."""
         transcription = await self.transcriber.transcribe(
             audio_bytes=audio_bytes,
             text_input=text_input,
@@ -88,7 +76,6 @@ class VoiceSession:
         for u in self.state.utterances:
             combined_entities.extend(u.entities)
 
-        # Create a synthetic transcription with combined context
         combined_transcription = TranscriptionResult(
             text=combined_text,
             language=self.language,
@@ -127,11 +114,7 @@ class VoiceSession:
         }
 
     def confirm_spec(self) -> GeneratedSpec:
-        """Confirm the generated spec and finalize the session.
-
-        Returns:
-            The finalized GeneratedSpec.
-        """
+        """Confirm the generated spec and finalize the session."""
         if not self.state.generated_spec:
             raise ValueError("No spec generated yet")
 
@@ -172,11 +155,7 @@ class VoiceSession:
 
     @classmethod
     def cleanup_old_sessions(cls, max_age_hours: int = 24) -> int:
-        """Remove sessions older than max_age_hours.
-
-        Returns:
-            Number of sessions removed.
-        """
+        """Remove sessions older than max_age_hours."""
         now = datetime.utcnow()
         to_remove: list[str] = []
         for sid, state in cls._sessions.items():
