@@ -2,7 +2,7 @@
 
 > **Powered by BGI Trident** — graph-native governance and reasoning for agent teams.
 
-[![CI](https://github.com/ahinsaai/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/ahinsaai/forge/actions)
+[![CI](https://github.com/ahinsaai/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/AbhinavKhareTech/forge/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
@@ -166,10 +166,10 @@ make docs
 ## Roadmap
 
 - [x] v0.1.0 — Core scaffold (Spec Engine, Agent Registry, Orchestrator)
-- [ ] v0.2.0 — Memory Fabric with Redis backend + vector search
-- [ ] v0.3.0 — MCP Mesh with GitHub, Jira, AWS integrations
-- [ ] v0.4.0 — BGI Trident governance runtime (full three-prong)
-- [ ] v0.5.0 — Reference agents (Planner, Coder, Reviewer, SRE)
+- [X] v0.2.0 — Memory Fabric with Redis backend + vector search
+- [X] v0.3.0 — MCP Mesh with GitHub, Jira, AWS integrations
+- [X] v0.4.0 — BGI Trident governance runtime (full three-prong)
+- [X] v0.5.0 — Reference agents (Planner, Coder, Reviewer, SRE)
 - [ ] v0.6.0 — Voice-driven spec creation via Swar integration
 - [ ] v1.0.0 — Production-ready with managed cloud offering
 
