@@ -138,18 +138,19 @@ class AgentGraphBuilder:
         if not self.memory:
             return []
 
-        # Search episodic namespace for events matching this workflow
-        entries = await self.memory.search(
-            query=workflow_id,
-            namespace="episodic",
-            limit=1000,
-        )
+        # List all keys in episodic namespace and filter by workflow_id
+        try:
+            keys = await self.memory._backend.list_keys(namespace="episodic")
+        except Exception:
+            return []
 
-        # Filter to events for this workflow
-        return [
-            e for e in entries
-            if e.workflow_id == workflow_id
-        ]
+        entries = []
+        for key in keys:
+            entry = await self.memory._backend.read(key, namespace="episodic")
+            if entry and entry.workflow_id == workflow_id:
+                entries.append(entry)
+
+        return entries
 
     async def build_global_graph(self, max_workflows: int = 100) -> nx.DiGraph:
         """Build a global graph across multiple workflows."""

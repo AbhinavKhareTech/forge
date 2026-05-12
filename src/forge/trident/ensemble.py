@@ -437,6 +437,16 @@ class TridentEnsemble:
     def _heuristic_tabular_score(self, agent: AgentConfig, action: str, context: dict[str, Any]) -> float:
         """Fallback heuristic when XGBoost is not available."""
         score = 0.0
+        # Action-based risk
+        action_risk = {
+            "delete_database": 0.9,
+            "deploy_prod": 0.8,
+            "delete_file": 0.6,
+            "write_file": 0.3,
+            "read_file": 0.05,
+            "execute_step": 0.1,
+        }
+        score = max(score, action_risk.get(action, 0.2))
         # Many permissions without much history is risky
         if len(agent.permissions) > 4:
             score = max(score, 0.25)

@@ -81,32 +81,42 @@ class AgentFeatureExtractor:
 
         # Compute execution stats
         features.total_executions = len(history)
-        features.total_failures = sum(
-            1 for h in history
-            if isinstance(h.value, dict) and h.value.get("status") == "failed"
-        )
-        features.total_blocks = sum(
-            1 for h in history
-            if isinstance(h.value, dict) and h.value.get("status") == "blocked"
-        )
+        features.total_failures = 0
+        features.total_blocks = 0
+        for h in history:
+            if isinstance(h.value, dict):
+                status = h.value.get("status")
+                if status is None and "payload" in h.value and isinstance(h.value["payload"], dict):
+                    status = h.value["payload"].get("status")
+                if status == "failed":
+                    features.total_failures += 1
+                elif status == "blocked":
+                    features.total_blocks += 1
 
         if features.total_executions > 0:
             features.failure_rate = features.total_failures / features.total_executions
             features.block_rate = features.total_blocks / features.total_executions
 
-            exec_times = [
-                h.value.get("execution_time_ms", 0)
-                for h in history
-                if isinstance(h.value, dict) and isinstance(h.value.get("execution_time_ms"), (int, float))
-            ]
+            exec_times = []
+            for h in history:
+                if isinstance(h.value, dict):
+                    et = h.value.get("execution_time_ms")
+                    if et is None and "payload" in h.value:
+                        et = h.value["payload"].get("execution_time_ms") if isinstance(h.value["payload"], dict) else None
+                    if isinstance(et, (int, float)):
+                        exec_times.append(et)
             if exec_times:
                 features.avg_execution_time_ms = sum(exec_times) / len(exec_times)
 
-            risk_scores = [
-                h.value.get("risk_score", 0)
-                for h in history
-                if isinstance(h.value, dict) and isinstance(h.value.get("risk_score"), (int, float))
-            ]
+            risk_scores = []
+            for h in history:
+                if isinstance(h.value, dict):
+                    # risk_score may be at top level or inside payload
+                    rs = h.value.get("risk_score")
+                    if rs is None and "payload" in h.value:
+                        rs = h.value["payload"].get("risk_score") if isinstance(h.value["payload"], dict) else None
+                    if isinstance(rs, (int, float)):
+                        risk_scores.append(rs)
             if risk_scores:
                 features.avg_risk_score = sum(risk_scores) / len(risk_scores)
                 if len(risk_scores) >= 4:
