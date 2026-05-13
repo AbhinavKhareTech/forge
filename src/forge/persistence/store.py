@@ -1,20 +1,18 @@
-"""Workflow state persistence.
-
-Saves workflow snapshots to disk for crash recovery and audit.
-"""
+"""Workflow state persistence."""
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from forge.config import get_config
-from forge.core.orchestrator import Workflow, WorkflowStatus
-from forge.protocols.agent import AgentStatus
 from forge.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from forge.core.orchestrator import Workflow
 
 logger = get_logger("forge.persistence.store")
 
@@ -34,11 +32,7 @@ class WorkflowSnapshot:
 
 
 class WorkflowStore:
-    """Persists workflow state to disk.
-
-    Stores snapshots as JSON files in .forge/snapshots/.
-    Enables recovery from crashes and long-running workflows.
-    """
+    """Persists workflow state to disk."""
 
     def __init__(self, snapshot_dir: Path | None = None) -> None:
         self.config = get_config()
@@ -46,14 +40,6 @@ class WorkflowStore:
         self._snapshot_dir.mkdir(parents=True, exist_ok=True)
 
     def save(self, workflow: Workflow) -> Path:
-        """Save a workflow snapshot.
-
-        Args:
-            workflow: The workflow to snapshot.
-
-        Returns:
-            Path to the saved snapshot file.
-        """
         snapshot = WorkflowSnapshot(
             workflow_id=workflow.workflow_id,
             spec_id=workflow.spec_id,
@@ -84,14 +70,6 @@ class WorkflowStore:
         return path
 
     def load(self, workflow_id: str) -> WorkflowSnapshot | None:
-        """Load a workflow snapshot.
-
-        Args:
-            workflow_id: The workflow ID to load.
-
-        Returns:
-            WorkflowSnapshot if found, None otherwise.
-        """
         path = self._snapshot_dir / f"{workflow_id}.json"
         if not path.exists():
             return None
@@ -102,15 +80,9 @@ class WorkflowStore:
         return snapshot
 
     def list_snapshots(self) -> list[str]:
-        """List all saved workflow IDs."""
         return [p.stem for p in self._snapshot_dir.glob("*.json")]
 
     def delete(self, workflow_id: str) -> bool:
-        """Delete a workflow snapshot.
-
-        Returns:
-            True if deleted, False if not found.
-        """
         path = self._snapshot_dir / f"{workflow_id}.json"
         if path.exists():
             path.unlink()
@@ -119,11 +91,6 @@ class WorkflowStore:
         return False
 
     def cleanup_old(self, max_age_hours: int = 168) -> int:
-        """Delete snapshots older than max_age_hours.
-
-        Returns:
-            Number of snapshots deleted.
-        """
         now = datetime.utcnow()
         deleted = 0
         for path in self._snapshot_dir.glob("*.json"):
