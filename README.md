@@ -166,11 +166,11 @@ make docs
 ## Roadmap
 
 - [x] v0.1.0 — Core scaffold (Spec Engine, Agent Registry, Orchestrator)
-- [ ] v0.2.0 — Memory Fabric with Redis backend + vector search
-- [ ] v0.3.0 — MCP Mesh with GitHub, Jira, AWS integrations
-- [ ] v0.4.0 — BGI Trident governance runtime (full three-prong)
-- [ ] v0.5.0 — Reference agents (Planner, Coder, Reviewer, SRE)
-- [ ] v0.6.0 — Voice-driven spec creation via Swar integration
+- [X] v0.2.0 — Memory Fabric with Redis backend + vector search
+- [X] v0.3.0 — MCP Mesh with GitHub, Jira, AWS integrations
+- [X] v0.4.0 — BGI Trident governance runtime (full three-prong)
+- [X] v0.5.0 — Reference agents (Planner, Coder, Reviewer, SRE)
+- [X] v0.6.0 — Voice-driven spec creation via Swar integration
 - [ ] v1.0.0 — Production-ready with managed cloud offering
 
 ## License
