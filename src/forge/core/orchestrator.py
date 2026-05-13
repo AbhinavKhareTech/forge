@@ -20,6 +20,7 @@ from forge.governance.runtime import GovernanceRuntime
 from forge.memory.fabric import MemoryFabric
 from forge.persistence.store import WorkflowStore
 from forge.protocols.agent import AgentResult, AgentStatus
+from forge.events.bus import EventBus, EventType
 from forge.resilience.circuit_breaker import CircuitBreaker
 from forge.resilience.retry import RetryPolicy
 from forge.utils.logging import get_logger
@@ -105,6 +106,7 @@ class Orchestrator:
         self.circuit_breaker = circuit_breaker or CircuitBreaker()
         self.retry_policy = retry_policy or RetryPolicy(max_attempts=3, base_delay=1.0)
         self.store = store or WorkflowStore()
+        self.events = EventBus()
         self.config = get_config()
         self._workflows: dict[str, Workflow] = {}
         self._semaphore = asyncio.Semaphore(self.config.max_concurrent_agents)
@@ -136,6 +138,13 @@ class Orchestrator:
 
         self._workflows[workflow_id] = workflow
         logger.info("workflow_started", workflow_id=workflow_id, spec_id=spec_id)
+
+        # Emit event
+        asyncio.create_task(self.events.emit(
+            EventType.WORKFLOW_STARTED,
+            workflow_id=workflow_id,
+            spec_id=spec_id,
+        ))
 
         # Kick off execution in background
         asyncio.create_task(self._execute_workflow(workflow_id))
@@ -178,10 +187,21 @@ class Orchestrator:
                     workflow.status = WorkflowStatus.COMPLETED
                     workflow.completed_at = time.time()
                     logger.info("workflow_completed", workflow_id=workflow_id)
+                    asyncio.create_task(self.events.emit(
+                        EventType.WORKFLOW_COMPLETED,
+                        workflow_id=workflow_id,
+                        spec_id=workflow.spec_id,
+                    ))
                 else:
                     workflow.status = WorkflowStatus.FAILED
                     workflow.error = "One or more steps failed"
                     logger.error("workflow_failed", workflow_id=workflow_id)
+                    asyncio.create_task(self.events.emit(
+                        EventType.WORKFLOW_FAILED,
+                        workflow_id=workflow_id,
+                        spec_id=workflow.spec_id,
+                        payload={"error": workflow.error},
+                    ))
 
         except Exception as e:
             workflow.status = WorkflowStatus.FAILED
@@ -215,6 +235,13 @@ class Orchestrator:
         step_exec.start_time = time.time()
 
         logger.info("step_started", workflow_id=workflow.workflow_id, step_id=step.id)
+        asyncio.create_task(self.events.emit(
+            EventType.STEP_STARTED,
+            workflow_id=workflow.workflow_id,
+            spec_id=workflow.spec_id,
+            step_id=step.id,
+            agent_name=agent_config.name,
+        ))
 
         # Find agent for this step's role
         agent_configs = self.agent_registry.list_by_role(step.agent_role)

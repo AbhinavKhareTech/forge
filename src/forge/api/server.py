@@ -7,6 +7,8 @@ from typing import Any
 
 from forge.api.routes import router
 from forge.api.websocket import ws_router
+from forge.api.sse import sse_router
+from forge.auth.middleware import APIKeyAuth
 from forge.utils.logging import get_logger
 
 logger = get_logger("forge.api")
@@ -45,6 +47,14 @@ def create_app() -> Any:
 
     app.include_router(router, prefix="/api/v1")
     app.include_router(ws_router, prefix="/ws")
+    app.include_router(sse_router, prefix="/sse")
+
+    # Auth middleware
+    auth = APIKeyAuth()
+    if auth.is_enabled():
+        logger.info("api_auth_enabled")
+    else:
+        logger.warning("api_auth_disabled")
 
     # Static files for dashboard
     try:
