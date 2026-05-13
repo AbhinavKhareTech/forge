@@ -1,0 +1,103 @@
+groups:
+  - name: forge-alerts
+    rules:
+      # ── High Error Rate ─────────────────────────────────────
+      - alert: ForgeHighErrorRate
+        expr: |
+          (
+            sum(rate(forge_spec_executions_total{status="failed"}[5m]))
+            /
+            sum(rate(forge_spec_executions_total[5m]))
+          ) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          service: forge
+        annotations:
+          summary: "High spec execution error rate"
+          description: "Forge spec execution error rate is above 10% for 2 minutes"
+
+      # ── Governance Block Spike ──────────────────────────────
+      - alert: ForgeGovernanceBlockSpike
+        expr: |
+          sum(rate(forge_governance_decisions_total{decision="BLOCK"}[5m])) > 5
+        for: 1m
+        labels:
+          severity: critical
+          service: forge
+        annotations:
+          summary: "Governance block rate spike"
+          description: "Forge governance is blocking more than 5 decisions per minute"
+
+      # ── Memory Fabric Down ────────────────────────────────────
+      - alert: ForgeMemoryFabricDown
+        expr: |
+          sum(rate(forge_memory_hits_total[5m])) == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: forge
+        annotations:
+          summary: "Memory fabric appears down"
+          description: "No memory operations detected for 2 minutes"
+
+      # ── High Agent Latency ────────────────────────────────────
+      - alert: ForgeHighAgentLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(forge_spec_duration_seconds_bucket[5m])) by (le, agent_type)
+          ) > 60
+        for: 5m
+        labels:
+          severity: warning
+          service: forge
+        annotations:
+          summary: "High agent execution latency"
+          description: "95th percentile agent latency is above 60 seconds"
+
+      # ── Orchestrator Queue Depth ──────────────────────────────
+      - alert: ForgeQueueDepthHigh
+        expr: forge_orchestrator_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: forge
+        annotations:
+          summary: "High orchestrator queue depth"
+          description: "Orchestrator queue depth is above 100 for 5 minutes"
+
+      # ── Circuit Breaker Open ──────────────────────────────────
+      - alert: ForgeCircuitBreakerOpen
+        expr: |
+          forge_circuit_breaker_state{state="open"} == 1
+        for: 1m
+        labels:
+          severity: warning
+          service: forge
+        annotations:
+          summary: "Circuit breaker is open"
+          description: "A circuit breaker has been open for more than 1 minute"
+
+      # ── Database Connection Issues ────────────────────────────
+      - alert: ForgeDatabaseUnhealthy
+        expr: |
+          forge_health_component{component="database", status!="healthy"} == 1
+        for: 2m
+        labels:
+          severity: critical
+          service: forge
+        annotations:
+          summary: "Database health check failing"
+          description: "Forge database health check has been failing for 2 minutes"
+
+      # ── API Rate Limiting ─────────────────────────────────────
+      - alert: ForgeRateLimiting
+        expr: |
+          rate(forge_api_requests_total{status="429"}[5m]) > 1
+        for: 1m
+        labels:
+          severity: info
+          service: forge
+        annotations:
+          summary: "API rate limiting active"
+          description: "Clients are being rate limited"

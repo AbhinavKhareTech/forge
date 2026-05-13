@@ -1,288 +1,431 @@
-"""Governance Runtime -- BGI Trident-powered policy enforcement.
+"""Production-hardened governance runtime with immutable audit logging.
 
-Before any agent acts, the Governance Runtime evaluates the action against
-organizational policies, security rules, and risk models. It returns one of:
-
-- ALLOW: Proceed with execution
-- REVIEW: Pause for human approval (checkpoint)
-- BLOCK: Deny the action entirely
-
-When BGI Trident is enabled, the runtime uses graph-native reasoning to
-detect anomalous agent behavior patterns, cross-agent collusion, and
-temporal drift in agent actions.
+Enforces ALLOW/REVIEW/BLOCK decisions with full audit trail, structured logging,
+and graceful fallback when BGI Trident is unavailable.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
-from forge.config import get_config
-from forge.protocols.agent import AgentConfig
-from forge.trident.ensemble import TridentEnsemble
-from forge.trident.config import TridentConfig
-from forge.trident.graph_builder import AgentGraphBuilder
-from forge.trident.features import AgentFeatureExtractor
-from forge.memory.fabric import MemoryFabric
-from forge.utils.logging import get_logger
+from forge.config import ForgeSettings, get_settings
+from forge.telemetry import get_logger, get_meter, get_tracer, trace_span
+from forge.telemetry.logging import get_correlation_id
 
 logger = get_logger("forge.governance")
 
 
-class PolicyDecision(str, Enum):
-    """Possible outcomes of a governance evaluation."""
+class GovernanceDecision(str, Enum):
+    """Governance decision outcomes."""
 
-    ALLOW = "allow"
-    REVIEW = "review"
-    BLOCK = "block"
+    ALLOW = "ALLOW"
+    REVIEW = "REVIEW"
+    BLOCK = "BLOCK"
+    ERROR = "ERROR"
 
 
-@dataclass
+class GovernanceSeverity(str, Enum):
+    """Severity levels for governance events."""
+
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+
+@dataclass(frozen=True)
+class GovernanceContext:
+    """Immutable context for a governance decision."""
+
+    spec_id: str
+    agent_id: str
+    agent_type: str
+    action: str
+    resource: str
+    correlation_id: str = field(default_factory=get_correlation_id)
+    timestamp: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    trace_id: str = ""
+    span_id: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "spec_id": self.spec_id,
+            "agent_id": self.agent_id,
+            "agent_type": self.agent_type,
+            "action": self.action,
+            "resource": self.resource,
+            "correlation_id": self.correlation_id,
+            "timestamp": self.timestamp,
+            "trace_id": self.trace_id,
+            "span_id": self.span_id,
+        }
+
+
+@dataclass(frozen=True)
 class GovernanceResult:
-    """Detailed result of a governance evaluation."""
+    """Immutable result of a governance decision."""
 
-    decision: PolicyDecision
-    score: float  # 0.0 (safe) to 1.0 (high risk)
-    reasons: list[str] = field(default_factory=list)
-    policy_violations: list[str] = field(default_factory=list)
-    trident_signals: list[dict[str, Any]] = field(default_factory=list)
-    suggested_mitigations: list[str] = field(default_factory=list)
+    decision: GovernanceDecision
+    confidence: float
+    reason: str
+    context: GovernanceContext
+    rule_id: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "decision": self.decision.value,
+            "confidence": self.confidence,
+            "reason": self.reason,
+            "rule_id": self.rule_id,
+            "context": self.context.to_dict(),
+            "metadata": self.metadata,
+        }
+
+
+class AuditLogger:
+    """Immutable, append-only audit logger for governance decisions.
+
+    Writes to both structured logs and a dedicated audit log file.
+    The audit log file should be mounted on an append-only filesystem
+    or forwarded to an immutable log store (e.g., AWS CloudTrail, Splunk).
+    """
+
+    def __init__(self, settings: ForgeSettings | None = None) -> None:
+        self._settings = settings or get_settings()
+        self._audit_path = Path(self._settings.governance_audit_log_path)
+        self._ensure_audit_directory()
+
+    def _ensure_audit_directory(self) -> None:
+        """Ensure the audit log directory exists."""
+        try:
+            self._audit_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.error(
+                "audit_directory_creation_failed",
+                path=str(self._audit_path.parent),
+                error=str(exc),
+            )
+
+    def _compute_hash(self, entry: dict[str, Any]) -> str:
+        """Compute SHA-256 hash of audit entry for tamper detection."""
+        canonical = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def log(self, result: GovernanceResult) -> None:
+        """Log an immutable audit entry for a governance decision.
+
+        This method is designed to be tamper-evident. Each entry includes
+        a hash of its contents. In production, the audit log should be
+        forwarded to an immutable external store.
+        """
+        entry = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%fZ", time.gmtime()),
+            "event_type": "governance_decision",
+            "decision": result.decision.value,
+            "confidence": result.confidence,
+            "reason": result.reason,
+            "rule_id": result.rule_id,
+            "context": result.context.to_dict(),
+            "metadata": result.metadata,
+        }
+        entry["entry_hash"] = self._compute_hash(entry)
+
+        # Structured logging (always)
+        logger.info(
+            "governance_decision",
+            decision=result.decision.value,
+            spec_id=result.context.spec_id,
+            agent_id=result.context.agent_id,
+            action=result.context.action,
+            resource=result.context.resource,
+            confidence=result.confidence,
+            reason=result.reason,
+            rule_id=result.rule_id,
+            correlation_id=result.context.correlation_id,
+        )
+
+        # Dedicated audit log file
+        try:
+            with open(self._audit_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+                f.flush()
+        except OSError as exc:
+            logger.critical(
+                "audit_log_write_failed",
+                path=str(self._audit_path),
+                error=str(exc),
+                entry=entry,
+            )
+            # In production, this should trigger an alert
+            raise RuntimeError(f"Failed to write audit log: {exc}") from exc
+
+
+class RuleBasedGovernance:
+    """Fallback rule-based governance engine when BGI Trident is unavailable.
+
+    Provides deterministic, auditable policy enforcement based on
+    configurable rules with pattern matching.
+    """
+
+    # Critical actions that always require human review
+    CRITICAL_ACTIONS = {
+        "delete_database",
+        "drop_table",
+        "delete_production_resource",
+        "modify_iam_policy",
+        "grant_admin_access",
+        "deploy_to_production",
+    }
+
+    # Actions that are always blocked
+    BLOCKED_ACTIONS = {
+        "delete_all_data",
+        "wipe_storage",
+        "disable_security_controls",
+        "exfiltrate_data",
+    }
+
+    # Resource patterns that trigger elevated scrutiny
+    SENSITIVE_RESOURCES = {
+        "production",
+        "customer_data",
+        "payment",
+        "auth",
+        "secret",
+        "credential",
+    }
+
+    def evaluate(self, context: GovernanceContext) -> GovernanceResult:
+        """Evaluate a governance request against rule-based policies."""
+        action_lower = context.action.lower()
+        resource_lower = context.resource.lower()
+
+        # Check blocked actions first (highest priority)
+        if any(blocked in action_lower for blocked in self.BLOCKED_ACTIONS):
+            return GovernanceResult(
+                decision=GovernanceDecision.BLOCK,
+                confidence=1.0,
+                reason=f"Action '{context.action}' is permanently blocked by policy",
+                context=context,
+                rule_id="RULE-BLOCK-001",
+                metadata={"policy_type": "hard_block", "matched_action": action_lower},
+            )
+
+        # Check critical actions
+        if any(critical in action_lower for critical in self.CRITICAL_ACTIONS):
+            is_sensitive = any(
+                sensitive in resource_lower for sensitive in self.SENSITIVE_RESOURCES
+            )
+            if is_sensitive:
+                return GovernanceResult(
+                    decision=GovernanceDecision.BLOCK,
+                    confidence=0.95,
+                    reason=f"Critical action on sensitive resource requires explicit approval",
+                    context=context,
+                    rule_id="RULE-CRIT-001",
+                    metadata={"policy_type": "critical_sensitive", "matched_resource": resource_lower},
+                )
+            return GovernanceResult(
+                decision=GovernanceDecision.REVIEW,
+                confidence=0.85,
+                reason=f"Critical action '{context.action}' requires human review",
+                context=context,
+                rule_id="RULE-CRIT-002",
+                metadata={"policy_type": "critical_review"},
+            )
+
+        # Check sensitive resources
+        if any(sensitive in resource_lower for sensitive in self.SENSITIVE_RESOURCES):
+            return GovernanceResult(
+                decision=GovernanceDecision.REVIEW,
+                confidence=0.75,
+                reason=f"Action on sensitive resource '{context.resource}' requires review",
+                context=context,
+                rule_id="RULE-SENS-001",
+                metadata={"policy_type": "sensitive_resource"},
+            )
+
+        # Default: allow with logging
+        return GovernanceResult(
+            decision=GovernanceDecision.ALLOW,
+            confidence=0.99,
+            reason="Action passes all rule-based policies",
+            context=context,
+            rule_id="RULE-DEFAULT-001",
+            metadata={"policy_type": "default_allow"},
+        )
 
 
 class GovernanceRuntime:
-    """Policy enforcement engine for agent actions.
+    """Production governance runtime with BGI Trident integration and fallback.
 
-    Supports both rule-based policies (fast, deterministic) and
-    BGI Trident graph-native scoring (deep, contextual).
+    Evaluates agent actions against policies using BGI Trident when available,
+    with automatic fallback to rule-based governance. All decisions are
+    logged to an immutable audit trail.
     """
 
-    def __init__(self, memory: MemoryFabric | None = None) -> None:
-        self.config = get_config()
-        self._policies: list[dict[str, Any]] = []
-        self._trident_enabled = self.config.trident_enabled
-        self._trident: TridentEnsemble | None = None
-        self._memory = memory
+    def __init__(self, settings: ForgeSettings | None = None) -> None:
+        self._settings = settings or get_settings()
+        self._audit_logger = AuditLogger(self._settings)
+        self._fallback_engine = RuleBasedGovernance()
+        self._meter = get_meter()
+        self._tracer = get_tracer()
+        self._trident_available: bool | None = None
 
-        if self._trident_enabled:
-            self._init_trident()
-
-    def _init_trident(self) -> None:
-        """Initialize BGI Trident ensemble."""
-        try:
-            trident_config = TridentConfig()
-            graph_builder = AgentGraphBuilder(memory=self._memory)
-            feature_extractor = AgentFeatureExtractor(memory=self._memory)
-            self._trident = TridentEnsemble(
-                config=trident_config,
-                graph_builder=graph_builder,
-                feature_extractor=feature_extractor,
-            )
-            logger.info("trident_initialized")
-        except Exception as e:
-            logger.error("trident_init_failed", error=str(e))
-            self._trident_enabled = False
-
-    def load_policies(self, policies: list[dict[str, Any]]) -> None:
-        """Load organizational policies.
-
-        Each policy is a dict with:
-            - name: str
-            - condition: callable or rule dict
-            - action: "allow" | "review" | "block"
-            - description: str
-        """
-        self._policies.extend(policies)
-        logger.info("policies_loaded", count=len(policies))
-
-    async def evaluate_action(
+    async def evaluate(
         self,
-        agent: AgentConfig,
+        spec_id: str,
+        agent_id: str,
+        agent_type: str,
         action: str,
-        context: dict[str, Any],
-    ) -> PolicyDecision:
-        """Evaluate whether an agent action should proceed.
-
-        Args:
-            agent: The agent attempting the action.
-            action: Action identifier (e.g. "execute_step", "deploy_prod").
-            context: Execution context including step details, workflow state.
-
-        Returns:
-            ALLOW, REVIEW, or BLOCK.
-        """
-        result = await self._evaluate(agent, action, context)
-
-        logger.info(
-            "governance_decision",
-            agent=agent.name,
-            action=action,
-            decision=result.decision.value,
-            score=result.score,
-            reasons=result.reasons,
-        )
-
-        return result.decision
-
-    async def _evaluate(
-        self,
-        agent: AgentConfig,
-        action: str,
-        context: dict[str, Any],
+        resource: str,
+        extra_context: dict[str, Any] | None = None,
     ) -> GovernanceResult:
-        """Internal evaluation combining rule-based and Trident scoring."""
-        reasons: list[str] = []
-        violations: list[str] = []
-        score = 0.0
-        trident_signals: list[dict[str, Any]] = []
+        """Evaluate an agent action and return a governance decision.
 
-        # 1. Rule-based policy checks (fast path)
-        for policy in self._policies:
-            triggered, policy_score = self._check_policy(policy, agent, action, context)
-            if triggered:
-                score = max(score, policy_score)
-                violations.append(policy["name"])
-                reasons.append(f"Policy violated: {policy['name']}")
-
-        # 2. Agent-level governance flags
-        if agent.requires_human_approval:
-            score = max(score, 0.8)
-            reasons.append("Agent requires human approval by configuration")
-
-        # 3. Action sensitivity scoring (reduced if agent has explicit permission)
-        action_risk = self._action_risk_score(action, agent)
-        score = max(score, action_risk)
-        if action_risk > 0.5:
-            reasons.append(f"High-risk action: {action}")
-
-        # 4. BGI Trident graph-native scoring (if enabled)
-        if self._trident_enabled and self._trident:
-            try:
-                trident_result = await self._trident.evaluate(agent, action, context)
-                score = max(score, trident_result.ensemble_score)
-                for signal in trident_result.signals:
-                    trident_signals.append({
-                        "prong": signal.prong,
-                        "type": signal.signal_type,
-                        "score": signal.score,
-                        "description": signal.description,
-                    })
-                    reasons.append(f"BGI Trident [{signal.prong}]: {signal.description}")
-            except Exception as e:
-                logger.error("trident_evaluation_failed", error=str(e))
-
-        # Determine decision from score
-        if score >= 0.9:
-            decision = PolicyDecision.BLOCK
-        elif score >= self.config.human_checkpoint_threshold:
-            decision = PolicyDecision.REVIEW
-        else:
-            decision = PolicyDecision.ALLOW
-
-        return GovernanceResult(
-            decision=decision,
-            score=score,
-            reasons=reasons,
-            policy_violations=violations,
-            trident_signals=trident_signals,
+        This is the primary entry point for all governance decisions.
+        It attempts BGI Trident first, falls back to rules, and always
+        logs the result to the audit trail.
+        """
+        context = GovernanceContext(
+            spec_id=spec_id,
+            agent_id=agent_id,
+            agent_type=agent_type,
+            action=action,
+            resource=resource,
         )
 
-    def _check_policy(
+        with trace_span(
+            "governance.evaluate",
+            attributes={
+                "spec_id": spec_id,
+                "agent_id": agent_id,
+                "action": action,
+                "resource": resource,
+            },
+        ) as span:
+            span.set_attribute("governance.mode", self._settings.trident_mode.value)
+
+            # Attempt BGI Trident if enabled and available
+            if self._settings.trident_mode.value in ("enabled", "fallback_rules"):
+                try:
+                    result = await self._evaluate_with_trident(context, extra_context)
+                    if result.decision != GovernanceDecision.ERROR:
+                        self._audit_logger.log(result)
+                        self._meter.record_governance_decision(
+                            result.decision.value, spec_id, agent_id,
+                        )
+                        span.set_attribute("governance.decision", result.decision.value)
+                        span.set_attribute("governance.confidence", result.confidence)
+                        return result
+                except Exception as exc:
+                    logger.warning(
+                        "trident_evaluation_failed",
+                        error=str(exc),
+                        spec_id=spec_id,
+                        agent_id=agent_id,
+                    )
+                    span.set_attribute("governance.trident_error", str(exc))
+
+                    if self._settings.trident_mode.value == "enabled":
+                        # In strict mode, fail closed
+                        result = GovernanceResult(
+                            decision=GovernanceDecision.BLOCK,
+                            confidence=1.0,
+                            reason=f"Trident evaluation failed and strict mode is enabled: {exc}",
+                            context=context,
+                            rule_id="RULE-FAIL-CLOSED",
+                            metadata={"error": str(exc), "fail_closed": True},
+                        )
+                        self._audit_logger.log(result)
+                        self._meter.record_governance_decision(
+                            result.decision.value, spec_id, agent_id,
+                        )
+                        return result
+
+            # Fallback to rule-based governance
+            result = self._fallback_engine.evaluate(context)
+            result = GovernanceResult(
+                decision=result.decision,
+                confidence=result.confidence * 0.9,  # Slightly lower confidence for fallback
+                reason=f"[FALLBACK] {result.reason}",
+                context=context,
+                rule_id=result.rule_id,
+                metadata={**result.metadata, "trident_fallback": True},
+            )
+
+            self._audit_logger.log(result)
+            self._meter.record_governance_decision(
+                result.decision.value, spec_id, agent_id,
+            )
+            span.set_attribute("governance.decision", result.decision.value)
+            span.set_attribute("governance.confidence", result.confidence)
+            span.set_attribute("governance.fallback", True)
+
+            return result
+
+    async def _evaluate_with_trident(
         self,
-        policy: dict[str, Any],
-        agent: AgentConfig,
-        action: str,
-        context: dict[str, Any],
-    ) -> tuple[bool, float]:
-        """Check if a single policy is triggered.
+        context: GovernanceContext,
+        extra_context: dict[str, Any] | None,
+    ) -> GovernanceResult:
+        """Evaluate using BGI Trident graph-native scoring.
 
-        Returns:
-            (triggered, risk_score)
+        This is a placeholder for the actual Trident integration.
+        In production, this would call the Trident service with
+        the agent relationship graph and behavior features.
         """
-        condition = policy.get("condition", {})
+        import httpx
 
-        # Policy must match the action if forbidden_actions is specified
-        if "forbidden_actions" in condition:
-            if action not in condition["forbidden_actions"]:
-                return False, 0.0
-            # If action matches forbidden list, check role restriction
-            if "forbidden_roles" in condition:
-                if agent.role in condition["forbidden_roles"]:
-                    return True, 1.0
-            return True, 1.0
-
-        # Permission-based policies only apply to specific actions
-        if "required_permissions" in condition:
-            action_perm_map = {
-                "deploy_prod": "deploy:prod",
-                "delete_database": "admin:database",
-                "delete_file": "write:file",
-            }
-            required_perm = condition["required_permissions"][0]
-            mapped_action_perm = action_perm_map.get(action)
-            if mapped_action_perm and mapped_action_perm == required_perm:
-                if not agent.has_permission(required_perm):
-                    return True, 0.9
-            return False, 0.0
-
-        if "max_amount" in condition:
-            amount = context.get("amount", 0)
-            if isinstance(amount, (int, float)) and amount > condition["max_amount"]:
-                return True, 0.85
-
-        return False, 0.0
-
-    def _action_risk_score(self, action: str, agent: AgentConfig) -> float:
-        """Return inherent risk score for common actions.
-
-        If agent has explicit permission for the action, risk is reduced.
-        """
-        risk_map = {
-            "execute_step": 0.1,
-            "read_file": 0.05,
-            "write_file": 0.3,
-            "delete_file": 0.7,
-            "deploy_prod": 0.9,
-            "delete_database": 1.0,
-            "create_payment_link": 0.6,
-            "issue_refund": 0.5,
+        trident_url = self._settings.trident_url.get_secret_value()
+        payload = {
+            "context": context.to_dict(),
+            "extra": extra_context or {},
+            "graph_features": {},  # Would be populated by graph_builder
         }
-        base_risk = risk_map.get(action, 0.3)
 
-        # Reduce risk if agent has explicit permission for this action
-        action_perm_map = {
-            "deploy_prod": "deploy:prod",
-            "delete_database": "admin:database",
-            "delete_file": "write:file",
-            "write_file": "write:file",
-        }
-        required_perm = action_perm_map.get(action)
-        if required_perm and agent.has_permission(required_perm):
-            base_risk = min(base_risk, 0.6)
+        async with httpx.AsyncClient(timeout=self._settings.trident_timeout) as client:
+            response = await client.post(
+                f"{trident_url}/evaluate",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            data = response.json()
 
-        return base_risk
+            decision = GovernanceDecision(data.get("decision", "REVIEW"))
+            return GovernanceResult(
+                decision=decision,
+                confidence=data.get("confidence", 0.5),
+                reason=data.get("reason", "Trident evaluation"),
+                context=context,
+                rule_id=data.get("rule_id", "TRIDENT-001"),
+                metadata={"trident_response": data},
+            )
 
-    async def _trident_evaluate(
+    async def batch_evaluate(
         self,
-        agent: AgentConfig,
-        action: str,
-        context: dict[str, Any],
-    ) -> tuple[float, list[dict[str, Any]]]:
-        """Evaluate using BGI Trident three-prong ensemble.
+        requests: list[dict[str, Any]],
+    ) -> list[GovernanceResult]:
+        """Evaluate multiple governance requests efficiently.
 
-        DEPRECATED: Now handled by TridentEnsemble directly.
-        Kept for backward compatibility.
+        Useful for bulk operations or pre-flight checks.
         """
-        if self._trident:
-            result = await self._trident.evaluate(agent, action, context)
-            signals = [
-                {
-                    "prong": s.prong,
-                    "type": s.signal_type,
-                    "score": s.score,
-                    "description": s.description,
-                }
-                for s in result.signals
-            ]
-            return result.ensemble_score, signals
-        return 0.0, []
+        results = []
+        for req in requests:
+            result = await self.evaluate(
+                spec_id=req["spec_id"],
+                agent_id=req["agent_id"],
+                agent_type=req["agent_type"],
+                action=req["action"],
+                resource=req["resource"],
+                extra_context=req.get("extra_context"),
+            )
+            results.append(result)
+        return results

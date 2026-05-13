@@ -26,30 +26,65 @@ ENV/
 env/
 .venv/
 
-# IDE
+# IDEs
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+.DS_Store
 
 # Testing
 .pytest_cache/
-.coverage
+.mypy_cache/
 htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
 .tox/
 
-# MyPy
-.mypy_cache/
-.dmypy.json
+# Documentation
+docs/_build/
+site/
 
-# Forge
-.forge/graph/
-.forge/logs/
+# Logs
+*.log
+logs/
 
-# Environment
+# Environment (NEVER commit)
 .env
 .env.local
+.env.*.local
+!.env.example
 
-# macOS
-.DS_Store
+# Secrets
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Docker
+.docker/
+
+# Kubernetes
+*.kubeconfig
+
+# OS
+Thumbs.db
+
+# Forge specific
+.forge/graph/
+forge-logs/
+audit.log
+bandit-report.json
+pip-audit-report.json
+semgrep-report.json
+sbom.*
