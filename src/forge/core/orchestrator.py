@@ -18,7 +18,10 @@ from forge.core.agent_registry import AgentRegistry
 from forge.core.spec_engine import Spec, SpecEngine, SpecStep
 from forge.governance.runtime import GovernanceRuntime
 from forge.memory.fabric import MemoryFabric
+from forge.persistence.store import WorkflowStore
 from forge.protocols.agent import AgentResult, AgentStatus
+from forge.resilience.circuit_breaker import CircuitBreaker
+from forge.resilience.retry import RetryPolicy
 from forge.utils.logging import get_logger
 
 logger = get_logger("forge.orchestrator")
@@ -91,11 +94,17 @@ class Orchestrator:
         agent_registry: AgentRegistry,
         memory: MemoryFabric,
         governance: GovernanceRuntime | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
+        retry_policy: RetryPolicy | None = None,
+        store: WorkflowStore | None = None,
     ) -> None:
         self.spec_engine = spec_engine
         self.agent_registry = agent_registry
         self.memory = memory
         self.governance = governance
+        self.circuit_breaker = circuit_breaker or CircuitBreaker()
+        self.retry_policy = retry_policy or RetryPolicy(max_attempts=3, base_delay=1.0)
+        self.store = store or WorkflowStore()
         self.config = get_config()
         self._workflows: dict[str, Workflow] = {}
         self._semaphore = asyncio.Semaphore(self.config.max_concurrent_agents)
@@ -246,9 +255,15 @@ class Orchestrator:
                 logger.info("step_awaiting_approval", step_id=step.id, checkpoint=step_exec.checkpoint_id)
                 return
 
-        # Execute agent
+        # Execute agent with retry and circuit breaker
+        async def _execute_with_resilience() -> AgentResult:
+            return await agent.execute(task_input, workflow.context)
+
         try:
-            result = await agent.execute(task_input, workflow.context)
+            result = await self.circuit_breaker.call(
+                target=agent_config.name,
+                fn=lambda: self.retry_policy.execute(_execute_with_resilience),
+            )
             step_exec.result = result
             step_exec.status = result.status
             step_exec.end_time = time.time()
@@ -258,6 +273,9 @@ class Orchestrator:
 
             # Update workflow context with outputs
             workflow.context.update(result.output)
+
+            # Persist workflow state
+            self.store.save(workflow)
 
             logger.info(
                 "step_completed",
@@ -271,6 +289,11 @@ class Orchestrator:
             step_exec.status = AgentStatus.FAILED
             step_exec.end_time = time.time()
             step_exec.logs.append(str(e))
+            step_exec.retry_count += 1
+
+            # Persist failed state
+            self.store.save(workflow)
+
             logger.exception("step_failed", workflow_id=workflow.workflow_id, step_id=step.id)
 
     async def approve_checkpoint(self, workflow_id: str, checkpoint_id: str) -> None:

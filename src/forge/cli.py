@@ -469,7 +469,7 @@ def _spec_to_markdown(spec) -> str:
     return "\n".join(lines)
 
 
-async def _cmd_serve(args: argparse.Namespace) -> int:
+def _cmd_serve(args: argparse.Namespace) -> int:
     """Start the Forge API server."""
     try:
         from forge.api.server import create_app
